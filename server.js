@@ -1,52 +1,13 @@
 var http = require('http'),
     url = require('url'),
-    util = require('util'),
-    events = require('events'),
     crypto = require('crypto'),
     mongoose = require('mongoose');
 
-var responses = require('./responses');
+var responses = require('./responses'),
+    application = require('./objects/application');
 var models = require('./objects/models').initialize();
 
 var db = mongoose.createConnection('mongodb://localhost/4d_data');
-
-// ought to move Application to a module. I can see it growing a bit more.
-var Application = {};
-Application.userTokenTTL = 30;  // minutes
-Application.port = 8080;
-Application.debug = true;
-
-function writeDebug(debugdata)
-{
-    if (Application.debug) console.log(debugdata);
-}
-
-// Should probably move this to a module (or application?)
-Emitter = function()
-{
-    events.EventEmitter.call(this);
-    this.success = function(data)
-    {
-        writeDebug('event:request_success');
-        this.emit('event:request_success',data);
-    }
-    this.error = function(data)
-    {
-        writeDebug('event:request_error');
-        this.emit('event:request_error',data);
-    }
-    this.authenticated = function(data)
-    {
-        writeDebug('event:authenticated');
-        this.emit('event:authenticated',data);
-    }
-    this.validatedRequest = function(data)
-    {
-        writeDebug('event:validatedRequest');
-        this.emit('event:validatedRequest',data);
-    }
-}
-util.inherits(Emitter,events.EventEmitter);
 
 // Need a better way to organize db crap. recommendations?
 db.on('error', console.error.bind(console, 'db connection error:'));
@@ -58,17 +19,17 @@ db.once('open', function callback ()
 // Methods that actually do stuff that has been requested of the API
 function appStatus(data)
 {
-    writeDebug('appStatus');
-    Application.emitter.success(responses.allOkay);
+    application.writeDebug('appStatus');
+    application.emitter.success(responses.allOkay);
 }
 function doLogin(data)
 {
-    writeDebug('doLogin');
+    application.writeDebug('doLogin');
 
     if (data.username == null ||
         data.password == null)
     {
-        Application.emitter.error(responses.userUnauthorizedInvalidCredentials);
+        application.emitter.error(responses.userUnauthorizedInvalidCredentials);
         return;
     }
 
@@ -131,7 +92,7 @@ function mToken(data)
 
 function getToken(data)
 {
-    Application.emitter.success(responses.successfulLogin(data.userToken));
+    application.emitter.success(responses.successfulLogin(data.userToken));
 }
 
 
@@ -140,7 +101,7 @@ function getToken(data)
 // I think we just made SSL a requirement. *sigh*
 function encrypt(plain)
 {
-    writeDebug('encrypt(%s)',plain);
+    application.writeDebug('encrypt(%s)',plain);
     var cipher = crypto.createCipher('aes-256-cbc','InmbuvP6Z8')
     var e = cipher.update(plain,'utf8','hex');
     e += cipher.final('hex');
@@ -150,7 +111,7 @@ function encrypt(plain)
 // for testing purposes
 function addUser(username,password)
 {
-    writeDebug('addUser(%s,%s)',username,password);
+    application.writeDebug('addUser(%s,%s)',username,password);
     var User = db.model('User');
     var user = new User(
     {
@@ -172,7 +133,7 @@ function addUser(username,password)
 // add a new client id and private key to the datastore
 function authorizeClient(clientId,privateKey)
 {
-    writeDebug('authorizeClient(%s,%s)',clientId,privateKey);
+    application.writeDebug('authorizeClient(%s,%s)',clientId,privateKey);
     var Client = db.model('Client');
     var client = new Client(
     {
@@ -194,7 +155,7 @@ function authorizeClient(clientId,privateKey)
 // value so I can reuse it for other hashes as well... and rename "getHash()"
 function validateHash(data,privateKey)
 {
-    writeDebug('validateHash');
+    application.writeDebug('validateHash');
     // hash data.payload with private key
     var hmac = crypto.createHmac('sha256',privateKey)
                 .update(JSON.stringify(data.payload))
@@ -215,12 +176,12 @@ function validateHash(data,privateKey)
 //   it was sent along with.
 function validateRequest(data)
 {
-    writeDebug('validateRequest');
+    application.writeDebug('validateRequest');
     if (typeof(data.client) == 'undefined' ||
         typeof(data.payload) == 'undefined' ||
         typeof(data.hash) == 'undefined')
     {
-    	Application.emitter.error(responses.missingRequiredInput);
+    	application.emitter.error(responses.missingRequiredInput);
     }
 
     var Client = db.model('Client');
@@ -229,20 +190,20 @@ function validateRequest(data)
         if (err)
         {
             console.log(err);
-            Application.emitter.error(responses.databaseError);
+            application.emitter.error(responses.databaseError);
         }
         else if (client == null)
         {
-            Application.emitter.error(responses.clientUnknown);
+            application.emitter.error(responses.clientUnknown);
         }
         else if (!validateHash(data,client.privateKey))
         {
-            Application.emitter.error(responses.clientUnauthorizedBadHash);
+            application.emitter.error(responses.clientUnauthorizedBadHash);
         }
         else
         {
             // let the app know we've validated the request.
-            Application.emitter.validatedRequest(data);
+            application.emitter.validatedRequest(data);
         }
     });
 }
@@ -255,15 +216,15 @@ function validateRequest(data)
 // salt generated when they logged in, and their remote address (hashed with the
 // app's private key).
 // Using the remote address helps prevent hijacking, and the tokens expire
-// periodically (Application.userTokenTTL).
+// periodically (application.userTokenTTL).
 function authenticateUser(data,nextMethod)
 {
-    writeDebug('authenticateUser');
+    application.writeDebug('authenticateUser');
 
     // verify they passed a userToken
     if (data.userToken == null)
     {
-        Application.emitter.error(responses.userUnauthorizedNullToken);
+        application.emitter.error(responses.userUnauthorizedNullToken);
         return;
     }
 
@@ -273,26 +234,20 @@ function authenticateUser(data,nextMethod)
         if (err)
         {
             console.log(err);
-            Application.emitter.error(responses.databaseError);
+            application.emitter.error(responses.databaseError);
             return;
         }
         else if (userToken == null)
         {
-            Application.emitter.error(responses.userUnauthorizedBadToken);
-            return;
+            application.emitter.error(responses.userUnauthorizedBadToken);
+            return false;
         }
-        else if (data.userToken != userToken.token)
+        else if (userToken.verify(data.userToken))
         {
-            Application.emitter.error(responses.userUnauthorizedBadIP);
-            return;
+            application.emitter.authenticated(data);
+            nextMethod(data);
         }
-        else if (userToken.expiration < new Date().valueOf())
-        {
-            Application.emitter.error(responses.userUnauthorizedExpiredToken);
-            return;
-        }
-        Application.emitter.authenticated(data);
-        nextMethod(data);
+        return;
     });
 }
 
@@ -300,7 +255,7 @@ function authenticateUser(data,nextMethod)
 // in the user's db record).
 function createUserToken(data,user)
 {
-    writeDebug('createUserToken');
+    application.writeDebug('createUserToken');
     // get the privatekey for the client in use
     var Client = db.model('Client');
     Client.findOne({ clientId:data.client },function(err,client)
@@ -321,7 +276,7 @@ function createUserToken(data,user)
 
         // create expiration
         var date = new Date();
-        date.setMinutes(date.getMinutes() + Application.userTokenTTL);
+        date.setMinutes(date.getMinutes() + application.userTokenTTL);
         var expires = date.valueOf();
 
         data.userToken = tokenHash;
@@ -379,15 +334,15 @@ function routeRequest(data)
     }
     else
     {
-        Application.emitter.error(responses.badRequest);
+        application.emitter.error(responses.badRequest);
     }
 }
 
 
 function onRequest(req,res)
 {
-    writeDebug('---------- NEW REQUEST');
-    writeDebug('onRequest');
+    application.writeDebug('---------- NEW REQUEST');
+    application.writeDebug('onRequest');
     var urlParameters = url.parse(req.url, true);
 
     // THIS IS TEST DATA
@@ -421,17 +376,17 @@ function onRequest(req,res)
     //   then call authenticateUser().
     // * if authenticateUser() succeeds, it emits an "authenticated" event, and we
     //   then call the method the user actually requested.
-    Application.emitter = new Emitter();
-    Application.emitter.on('event:request_error',
+
+    application.emitter.on('event:request_error',
         function(status){writeOut(res,status)});
-    Application.emitter.on('event:request_success',
+    application.emitter.on('event:request_success',
         function(status){writeOut(res,status)});
-    Application.emitter.on('event:validatedRequest',
+    application.emitter.on('event:validatedRequest',
         function(data){routeRequest(data)});
 
     validateRequest(data);
 }
 
-http.createServer(onRequest).listen(Application.port);
-console.log('listening on port %d',Application.port);
+http.createServer(onRequest).listen(application.port);
+console.log('listening on port %d',application.port);
 
