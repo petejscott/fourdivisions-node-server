@@ -14,6 +14,12 @@ var db = mongoose.createConnection('mongodb://localhost/4d_data');
 var Application = {};
 Application.userTokenTTL = 30;  // minutes
 Application.port = 8080;
+Application.debug = true;
+
+function writeDebug(debugdata)
+{
+    if (Application.debug) console.log(debugdata);
+}
 
 // Should probably move this to a module (or application?)
 Emitter = function()
@@ -21,18 +27,22 @@ Emitter = function()
     events.EventEmitter.call(this);
     this.success = function(data)
     {
+        writeDebug('event:request_success');
         this.emit('event:request_success',data);
     }
     this.error = function(data)
     {
+        writeDebug('event:request_error');
         this.emit('event:request_error',data);
     }
     this.authenticated = function(data)
     {
+        writeDebug('event:authenticated');
         this.emit('event:authenticated',data);
     }
     this.validatedRequest = function(data)
     {
+        writeDebug('event:validatedRequest');
         this.emit('event:validatedRequest',data);
     }
 }
@@ -48,11 +58,22 @@ db.once('open', function callback ()
 // Methods that actually do stuff that has been requested of the API
 function appStatus(data)
 {
+    writeDebug('appStatus');
     Application.emitter.success(responses.allOkay);
 }
 function doLogin(data)
 {
+    writeDebug('doLogin');
     // verify data.username, data.password
+
+    if (data.username == null ||
+        data.password == null)
+    {
+        console.log('no username/password');
+        //TODO: create response for this scenario. then kill console.log above.
+        return;
+    }
+
     var User = db.model('User');
     User.findOne({ name:data.username , password:data.password },
                  function(err,user)
@@ -67,6 +88,7 @@ function doLogin(data)
             try
             {
                 // synchronous.
+                console.log('creating new salt');
                 var buf = crypto.randomBytes(256);
                 user.salt = buf.toString('hex');
             }
@@ -75,22 +97,17 @@ function doLogin(data)
                 // handle error
             }
 
-            // TODO: wrong, idiot. userToken is its own schema and object.
-            user.userToken = createUserToken(data,user);
-
-            // TODO save BOTH the user and the userToken records
             user.save(function(err,user)
             {
+                console.log('saving user');
                 if (err)
                 {
+                    console.log('error');
                     // handle this. in SOME fashion.
                     return;
                 }
-                Application.emitter.success(
-                    responses.successfulLogin(user.userToken));
-                return;
-            }
-
+                createUserToken(data,user);
+            });
         }
     });
 }
@@ -99,7 +116,7 @@ function doLogin(data)
 // I feel like this is over-organized.
 function mTest(data)
 {
-	appStatus(data);
+ 	authenticateUser(data,appStatus);
 }
 function mLogin(data)
 {
@@ -109,6 +126,15 @@ function mStatus(data)
 {
     appStatus(data);
 }
+function mToken(data)
+{
+    authenticateUser(data,getToken);
+}
+
+function getToken(data)
+{
+    Application.emitter.success(responses.successfulLogin(data.userToken));
+}
 
 
 // not sure how best to handle this. if we leave encryption up to the CLIENT,
@@ -116,6 +142,7 @@ function mStatus(data)
 // I think we just made SSL a requirement. *sigh*
 function encrypt(plain)
 {
+    writeDebug('encrypt(%s)',plain);
     var cipher = crypto.createCipher('aes-256-cbc','InmbuvP6Z8')
     var e = cipher.update(plain,'utf8','hex');
     e += cipher.final('hex');
@@ -125,6 +152,7 @@ function encrypt(plain)
 // for testing purposes
 function addUser(username,password)
 {
+    writeDebug('addUser(%s,%s)',username,password);
     var User = db.model('User');
     var user = new User(
     {
@@ -146,6 +174,7 @@ function addUser(username,password)
 // add a new client id and private key to the datastore
 function authorizeClient(clientId,privateKey)
 {
+    writeDebug('authorizeClient(%s,%s)',clientId,privateKey);
     var Client = db.model('Client');
     var client = new Client(
     {
@@ -167,6 +196,7 @@ function authorizeClient(clientId,privateKey)
 // value so I can reuse it for other hashes as well... and rename "getHash()"
 function validateHash(data,privateKey)
 {
+    writeDebug('validateHash');
     // hash data.payload with private key
     var hmac = crypto.createHmac('sha256',privateKey)
                 .update(JSON.stringify(data.payload))
@@ -187,6 +217,7 @@ function validateHash(data,privateKey)
 //   it was sent along with.
 function validateRequest(data)
 {
+    writeDebug('validateRequest');
     if (typeof(data.client) == 'undefined' ||
         typeof(data.payload) == 'undefined' ||
         typeof(data.hash) == 'undefined')
@@ -214,7 +245,7 @@ function validateRequest(data)
         }
         else
         {
-	    // let the app know we've validated the request.
+            // let the app know we've validated the request.
             Application.emitter.validatedRequest(data);
         }
     });
@@ -229,70 +260,66 @@ function validateRequest(data)
 // PRIVATE KEY. NEEDS TO BE SALTED WITH SOMETHING ELSE MORE RANDOM.
 // Using the remote address helps prevent hijacking, and the tokens expire
 // periodically.
-function authenticateUser(data)
+function authenticateUser(data,nextMethod)
 {
+    writeDebug('authenticateUser');
+    console.log(data.userToken);
     // verify they passed a userToken
     if (data.userToken == null)
     {
-        // if we have no userToken, they need to be trying to log in.
-        if (data.parameters.pathname == '/login' &&
-            data.username != null &&
-            data.password != null)
+        Application.emitter.error(responses.userUnauthorizedNullToken);
+        return;
+    }
+
+    console.log("checking token status in authenticateUser");
+
+    var UserToken = db.model('UserToken');
+    UserToken.findOne({ token:data.userToken },function(err,userToken)
+    {
+        if (err)
         {
-            // login (is this right? make sure we don't end up running
-            // back through mLogin after we exit here
-            mLogin(data);
-        }
-        else
-        {
-            Application.emitter.error(responses.userUnauthorizedNullToken);
+            console.log(err);
+            Application.emitter.error(responses.databaseError);
             return;
         }
-    }
-
-    // look up data.parameters.userToken in token table (not found: 1003)
-    // TEST
-    server_userToken =
-    {
-        token:'c05f1ca39c2448977ebecde12da92bedfe4511a6e8a1a4c75a5fb137c0c77771',
-        expires:1354886936952
-    };
-
-    // if found, verify ip matches ip of requestor
-    if (data.userToken != server_userToken.token)
-    {
-        Application.emitter.error(responses.userUnauthorizedBadIP);
-        return;
-    }
-
-    // if it does, verify createtime is not too old
-    if (server_userToken.expires < new Date().valueOf())
-    {
-        Application.emitter.error(responses.userUnauthorizedExpiredToken);
-        return;
-    }
-
-    // if it isn't we're OK!
-    Application.emitter.authenticated(data);
+        else if (userToken == null)
+        {
+            Application.emitter.error(responses.userUnauthorizedBadToken);
+            return;
+        }
+        else if (data.userToken != userToken.token)
+        {
+            Application.emitter.error(responses.userUnauthorizedBadIP);
+            return;
+        }
+        else if (userToken.expiration < new Date().valueOf())
+        {
+            Application.emitter.error(responses.userUnauthorizedExpiredToken);
+            return;
+        }
+        Application.emitter.authenticated(data);
+        nextMethod(data);
+    });
 }
 
 // create a userToken. (note: don't forget to salt this. just stick a random
 // in the user's db record).
 function createUserToken(data,user)
 {
+    writeDebug('createUserToken');
     // get the privatekey for the client in use
     var Client = db.model('Client');
     Client.findOne({ clientId:data.client },function(err,client)
     {
         if (err)
         {
-            // handle error (same when we can't find the client id elsewhere,
+            // handle error,
             // though we should never get here, really).
             return;
         }
 
-        // create userToken
-        userToken = crypto.createHmac('sha256',client.privateKey)
+        // create userToken hash
+        tokenHash = crypto.createHmac('sha256',client.privateKey)
                         .update(user.name)
                         .update(user.salt)
                         .update(data.ipAddress)
@@ -303,11 +330,30 @@ function createUserToken(data,user)
         date.setMinutes(date.getMinutes() + Application.userTokenTTL);
         var expires = date.valueOf();
 
-        var server_userToken = {token: userToken,expires:expires};
-        console.log(server_userToken);
-        //TODO save to db 'userTokens' along with utctime + application.userTokenTTL
+        data.userToken = tokenHash;
 
-        return server_userToken;
+        var UserToken = db.model('UserToken');
+        userToken = new UserToken(
+        {
+            token:      tokenHash,
+            expiration: expires,
+            createDate: new Date()
+        });
+
+        console.log('added token %s to data from createUserToken',userToken);
+
+        userToken.save(function(err,userToken)
+        {
+            if (err)
+            {
+                // handle this somehow
+                console.log(err);
+                return;
+            }
+            data.parameters.path = '/token';
+            authenticateUser(data,getToken);
+        });
+
     });
 }
 
@@ -328,6 +374,8 @@ var mapping = {}
 mapping['/'] = mStatus;
 mapping['/test'] = mTest;
 mapping['/login'] = mLogin;
+mapping['/token'] = mToken;
+
 function routeRequest(data)
 {
     var doMethod = mapping[data.parameters.pathname];
@@ -344,6 +392,8 @@ function routeRequest(data)
 
 function onRequest(req,res)
 {
+    writeDebug('---------- NEW REQUEST');
+    writeDebug('onRequest');
     var urlParameters = url.parse(req.url, true);
 
     // THIS IS TEST DATA
@@ -351,7 +401,7 @@ function onRequest(req,res)
     {
         username:'test',
         password:'16679162a9f9fc74ed65ded077651f51',
-        userTokenx: 'c05f1ca39c2448977ebecde12da92bedfe4511a6e8a1a4c75a5fb137c0c77771',
+        userToken: '21fbc2e4bb0f321e0718c3d0302ce84fcb10c450cf240fa8625b811d29e70c75',
         payload: {'hello':'hello'},
         hash: '93eccb8d5dc0a896b094d326d40f5a266b944fe74ba9b11d3b2b6bf502264cd7',
         client: 'testClient',
@@ -379,13 +429,11 @@ function onRequest(req,res)
     //   then call the method the user actually requested.
     Application.emitter = new Emitter();
     Application.emitter.on('event:request_error',
-	function(status){writeOut(res,status)});
+        function(status){writeOut(res,status)});
     Application.emitter.on('event:request_success',
-	function(status){writeOut(res,status)});
+        function(status){writeOut(res,status)});
     Application.emitter.on('event:validatedRequest',
-	function(data){authenticateUser(data)});
-    Application.emitter.on('event:authenticated',
-	function(data){routeRequest(data)});
+        function(data){routeRequest(data)});
 
     validateRequest(data);
 }

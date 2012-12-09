@@ -1,4 +1,4 @@
-module.exports = 
+module.exports =
 {
     allOkay : {statuscode:200,message:"everything is okay"},
     databaseError : {statuscode:500,message:"an error occurred"},
@@ -7,6 +7,7 @@ module.exports =
     userUnauthorizedNullToken : {statuscode:401,message:"user unauthorized 1002"},
     userUnauthorizedBadIP : {statuscode:401,message:"user unauthorized 1003"},
     userUnauthorizedExpiredToken : {statuscode:401,message:"user unauthorized 1004"},
+    userUnauthorizedBadToken : {statuscode:401,message:"invalid token 1005"},
     badRequest : {statuscode:404,message:"invalid url"},
     missingRequiredInput : {statuscode:400,message:"missing required input"},
     successfulLogin : function(token)
