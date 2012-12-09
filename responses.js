@@ -8,6 +8,7 @@ module.exports =
     userUnauthorizedBadIP : {statuscode:401,message:"user unauthorized 1003"},
     userUnauthorizedExpiredToken : {statuscode:401,message:"user unauthorized 1004"},
     userUnauthorizedBadToken : {statuscode:401,message:"invalid token 1005"},
+    userUnauthorizedInvalidCredentials : {statuscode:402,message:"invalid username/password 1006"},
     badRequest : {statuscode:404,message:"invalid url"},
     missingRequiredInput : {statuscode:400,message:"missing required input"},
     successfulLogin : function(token)

@@ -64,13 +64,11 @@ function appStatus(data)
 function doLogin(data)
 {
     writeDebug('doLogin');
-    // verify data.username, data.password
 
     if (data.username == null ||
         data.password == null)
     {
-        console.log('no username/password');
-        //TODO: create response for this scenario. then kill console.log above.
+        Application.emitter.error(responses.userUnauthorizedInvalidCredentials);
         return;
     }
 
@@ -89,7 +87,7 @@ function doLogin(data)
             {
                 // synchronous.
                 console.log('creating new salt');
-                var buf = crypto.randomBytes(256);
+                var buf = crypto.randomBytes(64);
                 user.salt = buf.toString('hex');
             }
             catch (ex)
@@ -225,8 +223,6 @@ function validateRequest(data)
     	Application.emitter.error(responses.missingRequiredInput);
     }
 
-    // look up private key matching data.client
-    //(401 (client unauthorized) on failure)
     var Client = db.model('Client');
     Client.findOne({ clientId:data.client },function(err,client)
     {
@@ -255,23 +251,21 @@ function validateRequest(data)
 // it a pain to fake that information.
 // the data contains a userToken, which we generated and stored in the db and
 // gave back to the user when they first logged in. they pass this on
-// subsequent calls to the API. the token is a hash of the user's ID and their
-// remote address (hashed with the app's private key). NOTE: ENDANGERS THE
-// PRIVATE KEY. NEEDS TO BE SALTED WITH SOMETHING ELSE MORE RANDOM.
+// subsequent calls to the API. the token is a hash of the user's ID, a random
+// salt generated when they logged in, and their remote address (hashed with the
+// app's private key).
 // Using the remote address helps prevent hijacking, and the tokens expire
-// periodically.
+// periodically (Application.userTokenTTL).
 function authenticateUser(data,nextMethod)
 {
     writeDebug('authenticateUser');
-    console.log(data.userToken);
+
     // verify they passed a userToken
     if (data.userToken == null)
     {
         Application.emitter.error(responses.userUnauthorizedNullToken);
         return;
     }
-
-    console.log("checking token status in authenticateUser");
 
     var UserToken = db.model('UserToken');
     UserToken.findOne({ token:data.userToken },function(err,userToken)
@@ -385,7 +379,7 @@ function routeRequest(data)
     }
     else
     {
-        events.emit('event:request_error',responses.badRequest);
+        Application.emitter.error(responses.badRequest);
     }
 }
 
@@ -401,7 +395,7 @@ function onRequest(req,res)
     {
         username:'test',
         password:'16679162a9f9fc74ed65ded077651f51',
-        userToken: '21fbc2e4bb0f321e0718c3d0302ce84fcb10c450cf240fa8625b811d29e70c75',
+        userToken: '842c08cc227201f9a9800f93eb5385ff0ee56adf54eefd4caf19ecb14340f04e',
         payload: {'hello':'hello'},
         hash: '93eccb8d5dc0a896b094d326d40f5a266b944fe74ba9b11d3b2b6bf502264cd7',
         client: 'testClient',
