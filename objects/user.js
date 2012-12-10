@@ -11,5 +11,19 @@ module.exports = function()
         salt        : String,
         createDate  : Date
     });
+    User.methods.createSalt = function()
+    {
+        try
+        {
+            // synchronous.
+            console.log('creating new salt');
+            var buf = crypto.randomBytes(64);
+            this.salt = buf.toString('hex');
+        }
+        catch (ex)
+        {
+            //TODO handle error
+        }
+    }
     mongoose.model("User", User);
 };

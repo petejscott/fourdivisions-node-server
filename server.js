@@ -3,76 +3,31 @@ var http = require('http'),
     crypto = require('crypto'),
     mongoose = require('mongoose');
 
+// custom modules
 var responses = require('./responses'),
     application = require('./objects/application');
+
+// intialize the mongoose schemas/models.
 var models = require('./objects/models').initialize();
+
+/* ########################################################################## */
+// Need a better way to organize db crap. PLEASE GIMME RECOMMENDATIONS
 
 var db = mongoose.createConnection('mongodb://localhost/4d_data');
 
-// Need a better way to organize db crap. recommendations?
 db.on('error', console.error.bind(console, 'db connection error:'));
 db.once('open', function callback ()
 {
     console.log('database connected');
 });
 
-// Methods that actually do stuff that has been requested of the API
-function appStatus(data)
-{
-    application.writeDebug('appStatus');
-    application.emitter.success(responses.allOkay);
-}
-function doLogin(data)
-{
-    application.writeDebug('doLogin');
-
-    if (data.username == null ||
-        data.password == null)
-    {
-        application.emitter.error(responses.userUnauthorizedInvalidCredentials);
-        return;
-    }
-
-    var User = db.model('User');
-    User.findOne({ name:data.username , password:data.password },
-                 function(err,user)
-    {
-        if (err)
-        {
-            // return invalid username/password status
-        }
-        else
-        {
-            // we found the user. create a random salt
-            try
-            {
-                // synchronous.
-                console.log('creating new salt');
-                var buf = crypto.randomBytes(64);
-                user.salt = buf.toString('hex');
-            }
-            catch (ex)
-            {
-                // handle error
-            }
-
-            user.save(function(err,user)
-            {
-                console.log('saving user');
-                if (err)
-                {
-                    console.log('error');
-                    // handle this. in SOME fashion.
-                    return;
-                }
-                createUserToken(data,user);
-            });
-        }
-    });
-}
+/* ########################################################################## */
 
 // Methods that are called from the primary handler.
-// I feel like this is over-organized.
+// Any method that requires an authenticated user be present
+// should call authenticateUser() and provide the next method as
+// the second parameter.
+
 function mTest(data)
 {
  	authenticateUser(data,appStatus);
@@ -90,11 +45,64 @@ function mToken(data)
     authenticateUser(data,getToken);
 }
 
+/* ########################################################################## */
+
+// Methods that *actually* do stuff. With luck, most of these will ultimately
+// wind up being significantly smaller or exist in their entirety in external
+// files.
+
 function getToken(data)
 {
     application.emitter.success(responses.successfulLogin(data.userToken));
 }
+function appStatus(data)
+{
+    application.writeDebug('appStatus');
+    application.emitter.success(responses.allOkay);
+}
+function doLogin(data)
+{
+    application.writeDebug('doLogin');
 
+    if (data.username == null ||
+        data.password == null)
+    {
+        application.emitter.error(responses.userUnauthorizedInvalidCredentials);
+        return;
+    }
+
+    var User = db.model('User');
+    userObject = { name:data.username , password:data.password };
+    User.findOne(userObject,function(err,user)
+    {
+        if (err)
+        {
+            // db error of some sort (NOTE: figure out what will actually
+            // cause err to be populated.
+        }
+        else if (user == null)
+        {
+            // return invalid username/password status
+        }
+        else
+        {
+            // we found the user. create a random salt
+            user.createSalt();
+
+            user.save(function(err,user)
+            {
+                console.log('saving user');
+                if (err)
+                {
+                    console.log('error');
+                    // handle this. in SOME fashion.
+                    return;
+                }
+                createUserToken(data,user);
+            });
+        }
+    });
+}
 
 // not sure how best to handle this. if we leave encryption up to the CLIENT,
 // it won't be shared across multiple clients using the same API.
@@ -107,8 +115,10 @@ function encrypt(plain)
     e += cipher.final('hex');
     return e;
 }
+
 // add a new user to the datastore (note: this takes a plaintext password
-// for testing purposes
+// for testing purposes. in practice, client should send encrypted password
+// and we should JUST add it)
 function addUser(username,password)
 {
     application.writeDebug('addUser(%s,%s)',username,password);
@@ -130,6 +140,7 @@ function addUser(username,password)
         console.log(user);
     });
 }
+
 // add a new client id and private key to the datastore
 function authorizeClient(clientId,privateKey)
 {
@@ -251,8 +262,7 @@ function authenticateUser(data,nextMethod)
     });
 }
 
-// create a userToken. (note: don't forget to salt this. just stick a random
-// in the user's db record).
+// create a userToken.
 function createUserToken(data,user)
 {
     application.writeDebug('createUserToken');
@@ -306,6 +316,10 @@ function createUserToken(data,user)
     });
 }
 
+/* ########################################################################## */
+
+// Response output. Maybe move these to Application object? Haven't decided yet.
+
 // write a response (to both server for testing and to client).
 function writeOut(res,responsedata)
 {
@@ -317,6 +331,11 @@ function writeResponseHeader(res,statuscode)
 {
 	res.writeHead(statuscode, {'content-type':'application/json'});
 }
+
+/* ########################################################################## */
+
+// The basics: mapping url to actual methods, handling the requests, and a TON
+// of test data.
 
 // handles the mapping of pathname to methods.
 var mapping = {}
@@ -337,7 +356,6 @@ function routeRequest(data)
         application.emitter.error(responses.badRequest);
     }
 }
-
 
 function onRequest(req,res)
 {
