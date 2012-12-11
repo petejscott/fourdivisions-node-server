@@ -5,7 +5,9 @@ var http = require('http'),
 
 // custom modules
 var responses = require('./responses'),
-    application = require('./objects/application');
+    logger = require('./application/logger'),
+    config = require('./application/config'),
+    emitter = require('./application/events');
 
 // intialize the mongoose schemas/models.
 var models = require('./objects/models').initialize();
@@ -53,21 +55,21 @@ function mToken(data)
 
 function getToken(data)
 {
-    application.emitter.success(responses.successfulLogin(data.userToken));
+    emitter.success(responses.successfulLogin(data.userToken));
 }
 function appStatus(data)
 {
-    application.writeDebug('appStatus');
-    application.emitter.success(responses.allOkay);
+    logger.debug('appStatus');
+    emitter.success(responses.allOkay);
 }
 function doLogin(data)
 {
-    application.writeDebug('doLogin');
+    logger.debug('doLogin');
 
     if (data.username == null ||
         data.password == null)
     {
-        application.emitter.error(responses.userUnauthorizedInvalidCredentials);
+        emitter.error(responses.userUnauthorizedInvalidCredentials);
         return;
     }
 
@@ -109,7 +111,7 @@ function doLogin(data)
 // I think we just made SSL a requirement. *sigh*
 function encrypt(plain)
 {
-    application.writeDebug('encrypt(%s)',plain);
+    logger.debug('encrypt(%s)',plain);
     var cipher = crypto.createCipher('aes-256-cbc','InmbuvP6Z8')
     var e = cipher.update(plain,'utf8','hex');
     e += cipher.final('hex');
@@ -121,7 +123,7 @@ function encrypt(plain)
 // and we should JUST add it)
 function addUser(username,password)
 {
-    application.writeDebug('addUser(%s,%s)',username,password);
+    logger.debug('addUser(%s,%s)',username,password);
     var User = db.model('User');
     var user = new User(
     {
@@ -144,7 +146,7 @@ function addUser(username,password)
 // add a new client id and private key to the datastore
 function authorizeClient(clientId,privateKey)
 {
-    application.writeDebug('authorizeClient(%s,%s)',clientId,privateKey);
+    logger.debug('authorizeClient(%s,%s)',clientId,privateKey);
     var Client = db.model('Client');
     var client = new Client(
     {
@@ -166,7 +168,7 @@ function authorizeClient(clientId,privateKey)
 // value so I can reuse it for other hashes as well... and rename "getHash()"
 function validateHash(data,privateKey)
 {
-    application.writeDebug('validateHash');
+    logger.debug('validateHash');
     // hash data.payload with private key
     var hmac = crypto.createHmac('sha256',privateKey)
                 .update(JSON.stringify(data.payload))
@@ -187,12 +189,12 @@ function validateHash(data,privateKey)
 //   it was sent along with.
 function validateRequest(data)
 {
-    application.writeDebug('validateRequest');
+    logger.debug('validateRequest');
     if (typeof(data.client) == 'undefined' ||
         typeof(data.payload) == 'undefined' ||
         typeof(data.hash) == 'undefined')
     {
-    	application.emitter.error(responses.missingRequiredInput);
+    	emitter.error(responses.missingRequiredInput);
     }
 
     var Client = db.model('Client');
@@ -201,20 +203,20 @@ function validateRequest(data)
         if (err)
         {
             console.log(err);
-            application.emitter.error(responses.databaseError);
+            emitter.error(responses.databaseError);
         }
         else if (client == null)
         {
-            application.emitter.error(responses.clientUnknown);
+            emitter.error(responses.clientUnknown);
         }
         else if (!validateHash(data,client.privateKey))
         {
-            application.emitter.error(responses.clientUnauthorizedBadHash);
+            emitter.error(responses.clientUnauthorizedBadHash);
         }
         else
         {
             // let the app know we've validated the request.
-            application.emitter.validatedRequest(data);
+            emitter.validatedRequest(data);
         }
     });
 }
@@ -227,15 +229,15 @@ function validateRequest(data)
 // salt generated when they logged in, and their remote address (hashed with the
 // app's private key).
 // Using the remote address helps prevent hijacking, and the tokens expire
-// periodically (application.userTokenTTL).
+// periodically (config.userTokenTTL).
 function authenticateUser(data,nextMethod)
 {
-    application.writeDebug('authenticateUser');
+    logger.debug('authenticateUser');
 
     // verify they passed a userToken
     if (data.userToken == null)
     {
-        application.emitter.error(responses.userUnauthorizedNullToken);
+        emitter.error(responses.userUnauthorizedNullToken);
         return;
     }
 
@@ -245,17 +247,17 @@ function authenticateUser(data,nextMethod)
         if (err)
         {
             console.log(err);
-            application.emitter.error(responses.databaseError);
+            emitter.error(responses.databaseError);
             return;
         }
         else if (userToken == null)
         {
-            application.emitter.error(responses.userUnauthorizedBadToken);
+            emitter.error(responses.userUnauthorizedBadToken);
             return false;
         }
         else if (userToken.verify(data.userToken))
         {
-            application.emitter.authenticated(data);
+            emitter.authenticated(data);
             nextMethod(data);
         }
         return;
@@ -265,7 +267,7 @@ function authenticateUser(data,nextMethod)
 // create a userToken.
 function createUserToken(data,user)
 {
-    application.writeDebug('createUserToken');
+    logger.debug('createUserToken');
     // get the privatekey for the client in use
     var Client = db.model('Client');
     Client.findOne({ clientId:data.client },function(err,client)
@@ -286,7 +288,7 @@ function createUserToken(data,user)
 
         // create expiration
         var date = new Date();
-        date.setMinutes(date.getMinutes() + application.userTokenTTL);
+        date.setMinutes(date.getMinutes() + config.userTokenTTL);
         var expires = date.valueOf();
 
         data.userToken = tokenHash;
@@ -353,14 +355,14 @@ function routeRequest(data)
     }
     else
     {
-        application.emitter.error(responses.badRequest);
+        emitter.error(responses.badRequest);
     }
 }
 
 function onRequest(req,res)
 {
-    application.writeDebug('---------- NEW REQUEST');
-    application.writeDebug('onRequest');
+    logger.debug('---------- NEW REQUEST');
+    logger.debug('onRequest');
     var urlParameters = url.parse(req.url, true);
 
     // THIS IS TEST DATA
@@ -395,16 +397,16 @@ function onRequest(req,res)
     // * if authenticateUser() succeeds, it emits an "authenticated" event, and we
     //   then call the method the user actually requested.
 
-    application.emitter.on('event:request_error',
+    emitter.on('event:request_error',
         function(status){writeOut(res,status)});
-    application.emitter.on('event:request_success',
+    emitter.on('event:request_success',
         function(status){writeOut(res,status)});
-    application.emitter.on('event:validatedRequest',
+    emitter.on('event:validatedRequest',
         function(data){routeRequest(data)});
 
     validateRequest(data);
 }
 
-http.createServer(onRequest).listen(application.port);
-console.log('listening on port %d',application.port);
+http.createServer(onRequest).listen(config.port);
+console.log('listening on port %d',config.port);
 

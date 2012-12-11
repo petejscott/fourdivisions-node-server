@@ -1,5 +1,5 @@
 var mongoose = require('mongoose'),
-    application = require('./application');
+    emitter = require('../application/events');
     responses = require('../responses');
 var Schema = mongoose.Schema;
 
@@ -15,12 +15,12 @@ module.exports = function()
     {
         if (token != this.token)
         {
-            application.emitter.error(responses.userUnauthorizedBadIP);
+            emitter.error(responses.userUnauthorizedBadIP);
             return false;
         }
         else if (this.expiration < new Date().valueOf())
         {
-            application.emitter.error(responses.userUnauthorizedExpiredToken);
+            emitter.error(responses.userUnauthorizedExpiredToken);
             return false;
         }
         return true;
